@@ -16,11 +16,17 @@
  */
 pragma solidity ^0.4.6;
 
+import "./SafeMath.sol";
 import "./OpenCollabToken.sol";
 
-contract MangoRepo {
+contract MangoRepo is SafeMath {
   string public name;
   bool public obsolete;
+  uint public maintainerPercentage;
+
+  uint openPullRequestStake = 1;
+  uint mergePullRequestStake = 1;
+  uint challengeStake = 1;
 
   OpenCollabToken public token;
 
@@ -36,6 +42,7 @@ contract MangoRepo {
     uint id;
     address creator;
     string hash;
+    uint totalStake;
     mapping (address => uint) stakedTokens;
   }
 
@@ -70,7 +77,18 @@ contract MangoRepo {
     maintainerAddresses.push(msg.sender);
     obsolete = false;
     token = new OpenCollabToken(address(this));
-    token.mint(100);
+  }
+
+  function tokenAddr() constant returns (address addr) {
+    return address(token);
+  }
+
+  function mintOCT(uint256 amount) maintainerOnly {
+    token.mint(amount);
+  }
+
+  function transferOCT(address to, uint256 value) maintainerOnly {
+    token.transfer(to, value);
   }
 
   function refCount() constant returns (uint) {
@@ -133,18 +151,15 @@ contract MangoRepo {
     return issues.length;
   }
 
-  function getIssue(uint id) constant returns (string hash) {
+  function getIssue(uint id) constant returns (address creator, string hash, uint totalStake) {
     if (id >= issues.length || id < 0) throw;
+    if (bytes(issues[id].hash).length == 0) throw;
 
-    if (bytes(issues[id].hash).length == 0) {
-      return '';
-    } else {
-      return issues[id].hash;
-    }
+    return (issues[id].creator, issues[id].hash, issues[id].totalStake);
   }
 
   function newIssue(string hash) {
-    issues.push(Issue(issues.length - 1, msg.sender, hash));
+    issues.push(Issue(issues.length - 1, msg.sender, hash, 0));
   }
 
   function setIssue(uint id, string hash) issuePermissions(id) {
@@ -164,10 +179,11 @@ contract MangoRepo {
     if (id >= issues.length || id < 0) throw;
     if (bytes(issues[id].hash).length == 0) throw;
 
-    if (token.balanceOf(msg.sender) < stake) throw; // Check for insufficient tokens
+    // Transfer stake to repo
+    token.stake(msg.sender, stake);
 
-    issues[id].stakedTokens[msg.sender] += stake;
-    token.transferFrom(msg.sender, address(this), stake); // Transfer stake to repo
+    issues[id].stakedTokens[msg.sender] = safeAdd(issues[id].stakedTokens[msg.sender], stake);
+    issues[id].totalStake = safeAdd(issues[id].totalStake, stake);
 
     return true;
   }
@@ -176,18 +192,18 @@ contract MangoRepo {
     return pullRequests.length;
   }
 
-  function getPullRequest(uint id) constant returns (address fork) {
+  function getPullRequest(uint id) constant returns (address creator, uint issueId, address fork) {
     if (id >= pullRequests.length || id < 0) throw;
+    if (pullRequests[id].fork == address(0)) throw;
 
-    if (pullRequests[id].fork == address(0)) {
-      return address(0);
-    } else {
-      return pullRequests[id].fork;
-    }
+    return (pullRequests[id].creator, pullRequests[id].issue.id, pullRequests[id].fork);
   }
 
   function openPullRequest(uint issueId, address fork) {
     if (bytes(issues[issueId].hash).length == 0) throw;
+
+    // Transfer stake to repo
+    token.stake(msg.sender, openPullRequestStake);
 
     pullRequests.push(PullRequest(pullRequests.length - 1, issues[issueId], msg.sender, fork));
   }
@@ -195,6 +211,9 @@ contract MangoRepo {
   function closePullRequest(uint id) pullRequestPermissions(id) {
     if (id >= pullRequests.length || id < 0) throw;
     if (pullRequests[id].fork == address(0)) throw;
+
+    // Destroy stake
+    token.destroy(openPullRequestStake);
 
     delete pullRequests[id];
   }

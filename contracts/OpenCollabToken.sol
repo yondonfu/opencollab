@@ -7,24 +7,53 @@ contract OpenCollabToken is ERC20, SafeMath {
   string public standard = "ERC20";
   string public name = "OpenCollabToken";
   string public symbol = "OCT";
-
-  address public repoAddress;
-  address owner;
+  uint256 public decimals = 18;
 
   mapping (address => uint) balances;
   mapping (address => mapping (address => uint256)) allowed;
 
-  function OpenCollabToken(address _repoAddress) {
-    repoAddress = _repoAddress;
-    owner = msg.sender;
+  address public repoAddress;
+
+  uint256 public supplyCap = 21000000000000000000000000;
+
+  modifier onlyRepo() {
+    if (msg.sender != repoAddress) throw;
+    _;
   }
 
-  function mint(uint value) {
-    // For testing purposes only
-    if (msg.sender != owner) throw;
+  function OpenCollabToken(address _repoAddress) {
+    repoAddress = _repoAddress;
+  }
 
-    totalSupply = value;
-    balances[owner] = value;
+  // Minted OCT initially sent to the associated MangoRepo contract
+  function mint(uint256 value) onlyRepo returns (bool success) {
+    // Cannot mint more than cap
+    if ((totalSupply + value) > supplyCap) throw;
+
+    balances[repoAddress] = safeAdd(balances[repoAddress], value);
+    totalSupply = safeAdd(totalSupply, value);
+
+    return true;
+  }
+
+  function stake(address staker, uint256 value) onlyRepo returns (bool success) {
+    // Check for insufficient tokens
+    if (balances[staker] < value) throw;
+
+    balances[repoAddress] = safeAdd(balances[repoAddress], value);
+    balances[staker] = safeSub(balances[staker], value);
+
+    return true;
+  }
+
+  function destroy(uint256 value) onlyRepo returns (bool success) {
+    // Cannot destroy such that supply is less than 0
+    if ((totalSupply - value) < 0) throw;
+
+    balances[repoAddress] = safeSub(balances[repoAddress], value);
+    totalSupply = safeSub(totalSupply, value);
+
+    return true;
   }
 
   // ERC20 standard functions
