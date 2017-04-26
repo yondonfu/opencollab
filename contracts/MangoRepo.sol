@@ -22,11 +22,19 @@ import "./OpenCollabToken.sol";
 contract MangoRepo is SafeMath {
   string public name;
   bool public obsolete;
-  uint public maintainerPercentage;
+  uint maintainerPercentage = 50;
 
   uint openPullRequestStake = 1;
   uint mergePullRequestStake = 1;
   uint challengeStake = 1;
+
+  bool challenged;
+  uint256 challengePeriod = 1 days;
+  uint256 challengePeriodEnd;
+  uint256 votingPeriod = 1 days;
+  uint256 votingPeriodEnd;
+
+  mapping (address => uint) rewards;
 
   OpenCollabToken public token;
 
@@ -147,6 +155,8 @@ contract MangoRepo is SafeMath {
     snapshots.push(hash);
   }
 
+  // Issue operations
+
   function issueCount() constant returns (uint count) {
     return issues.length;
   }
@@ -188,6 +198,8 @@ contract MangoRepo is SafeMath {
     return true;
   }
 
+  // Pull request operations
+
   function pullRequestCount() constant returns (uint count) {
     return pullRequests.length;
   }
@@ -218,9 +230,59 @@ contract MangoRepo is SafeMath {
     delete pullRequests[id];
   }
 
+  function initMergePullRequest(uint id) maintainerOnly {
+    if (id >= pullRequests.length || id < 0) throw;
+    if (pullRequests[id].fork == address(0)) throw;
+    // Already in a challenge period
+    if (challenged) throw;
+
+    challenged = true;
+    challengePeriodEnd = block.timestamp + challengePeriod;
+  }
+
+  function mergePullRequest(uint id) maintainerOnly {
+    if (id >= pullRequests.length || id < 0) throw;
+    if (pullRequests[id].fork == address(0)) throw;
+    // Not in a challenge period
+    if (!challenged) throw;
+    // Challenge period not over yet
+    if (block.timestamp < challengePeriodEnd) throw;
+
+    challenged = false;
+
+    // Mint issue reward
+    token.mint(pullRequests[id].issue.totalStake);
+
+    // Calculate rewards
+    uint256 maintainerReward = calcMaintainerReward(pullRequests[id].issue.totalStake);
+    uint256 contributorReward = pullRequests[id].issue.totalStake - maintainerReward;
+
+    rewards[msg.sender] = safeAdd(rewards[msg.sender], maintainerReward);
+    rewards[pullRequests[id].creator] = safeAdd(rewards[pullRequests[id].creator], contributorReward);
+
+    delete pullRequests[id];
+  }
+
+  function calcMaintainerReward(uint256 amount) constant returns (uint256 reward) {
+    return (amount * maintainerPercentage) / 100;
+  }
+
+  function reward() external {
+    uint256 reward = rewards[msg.sender];
+
+    if (reward == 0) throw;
+    if (token.balanceOf(address(this)) < reward) throw;
+
+    rewards[msg.sender] = 0;
+
+    token.transfer(msg.sender, reward);
+  }
+
   function setObsolete() maintainerOnly {
     obsolete = true;
   }
+
+  // Maintainer operations
 
   function maintainerCount() constant returns (uint) {
     return maintainerAddresses.length;
