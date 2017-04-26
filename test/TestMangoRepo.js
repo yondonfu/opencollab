@@ -43,10 +43,11 @@ contract('MangoRepo', function(accounts) {
 
     // Initial token allocation
     await repo.mintOCT(100, {from: accounts[0]});
-    await repo.transferOCT(accounts[0], 40, {from: accounts[0]});
+    await repo.transferOCT(accounts[0], 20, {from: accounts[0]});
     await repo.transferOCT(accounts[1], 20, {from: accounts[0]});
     await repo.transferOCT(accounts[2], 20, {from: accounts[0]});
     await repo.transferOCT(accounts[3], 20, {from: accounts[0]});
+    await repo.transferOCT(accounts[4], 20, {from: accounts[0]});
   });
 
   it('should properly allocate tokens to different accounts', async function() {
@@ -54,11 +55,13 @@ contract('MangoRepo', function(accounts) {
     const balance1 = await token.balanceOf(accounts[1]);
     const balance2 = await token.balanceOf(accounts[2]);
     const balance3 = await token.balanceOf(accounts[3]);
+    const balance4 = await token.balanceOf(accounts[4]);
 
-    assert.equal(balance0.toNumber(), 40, 'should have the correct balance for account 0');
+    assert.equal(balance0.toNumber(), 20, 'should have the correct balance for account 0');
     assert.equal(balance1.toNumber(), 20, 'should have the correct balance for account 1');
     assert.equal(balance2.toNumber(), 20, 'should have the correct balance for account 2');
     assert.equal(balance3.toNumber(), 20, 'should have the correct balance for account 3');
+    assert.equal(balance4.toNumber(), 20, 'should have the correct balance for account 4');
   });
 
   it('should create a new issue', async function() {
@@ -76,7 +79,7 @@ contract('MangoRepo', function(accounts) {
     const balance2Start = await token.balanceOf(accounts[2]);
     const repoBalanceStart = await token.balanceOf(repo.address);
 
-    await repo.voteIssue(0, 4, {from: accounts[1]});
+    await repo.stakeIssue(0, 4, {from: accounts[1]});
 
     let issue = await repo.getIssue(0);
     let totalStake = issue[2];
@@ -88,7 +91,7 @@ contract('MangoRepo', function(accounts) {
     assert.equal(repoBalance.toNumber() - repoBalanceStart.toNumber(), 4, 'repo balance should change by correct amount after 1 voter');
     assert.equal(balance1Start.toNumber() - balance1End.toNumber(), 4, 'voter 1 balance should change by correct amount');
 
-    await repo.voteIssue(0, 2, {from: accounts[2]});
+    await repo.stakeIssue(0, 2, {from: accounts[2]});
 
     issue = await repo.getIssue(0);
     totalStake = issue[2];
@@ -164,11 +167,78 @@ contract('MangoRepo', function(accounts) {
     const maintainerBalanceEnd = await token.balanceOf(accounts[0]);
     const contributorBalanceEnd = await token.balanceOf(accounts[3]);
 
-    assert.equal(maintainerBalanceEnd.toNumber(), maintainerBalanceStart.toNumber() + 3, 'maintainer should update token balance with reward');
-    assert.equal(contributorBalanceEnd.toNumber(), contributorBalanceStart.toNumber() + 3, 'contributor should update token balance with reward');
+    assert.equal(maintainerBalanceEnd.toNumber() - maintainerBalanceStart.toNumber(), 4, 'maintainer should update token balance with reward');
+    assert.equal(contributorBalanceEnd.toNumber() - contributorBalanceStart.toNumber(), 4, 'contributor should update token balance with reward');
   });
 
-  it('should run voting for a challenged pull request', async function() {
+  it('should run a voting round and uphold a challenged pull request', async function() {
+    const hash = 'foo';
 
+    await repo.newIssue(hash, {from: accounts[0]});
+
+    await repo.stakeIssue(1, 6, {from: accounts[1]});
+
+    // Use an Ethereum account as a dummy contract address representing a fork
+    await repo.openPullRequest(1, accounts[9], {from: accounts[3]});
+
+    await repo.initMergePullRequest(2, {from: accounts[0]});
+
+    await repo.challenge(accounts[0], {from: accounts[4]});
+
+    await repo.vote(true, {from: accounts[0]});
+    await repo.vote(true, {from: accounts[1]});
+    await repo.vote(true, {from: accounts[2]});
+    await repo.vote(false, {from: accounts[3]});
+    await repo.vote(false, {from: accounts[4]});
+
+    // Increase block time by a day
+    await web3.evm.increaseTime(24 * 60 * 60);
+
+    const repoBalanceStart = await token.balanceOf(repo.address);
+
+    await repo.voteResult({from: accounts[4]});
+
+    const repoBalanceEnd = await token.balanceOf(repo.address);
+
+    assert.equal(repoBalanceStart.toNumber() - repoBalanceEnd.toNumber(), 1, 'repo balance should reflect destroyed tokens');
+
+    await repo.mergePullRequest(2, {from: accounts[0]});
   });
+
+  it('should run a voting round and veto a challenged pull request', async function() {
+    const hash = 'foo';
+
+    await repo.newIssue(hash, {from: accounts[0]});
+
+    await repo.stakeIssue(2, 6, {from: accounts[1]});
+
+    // Use an Ethereum account as a dummy contract address representing a fork
+    await repo.openPullRequest(2, accounts[9], {from: accounts[3]});
+
+    await repo.initMergePullRequest(3, {from: accounts[0]});
+
+    await repo.challenge(accounts[0], {from: accounts[4]});
+
+    await repo.vote(false, {from: accounts[0]});
+    await repo.vote(false, {from: accounts[1]});
+    await repo.vote(false, {from: accounts[2]});
+    await repo.vote(true, {from: accounts[3]});
+    await repo.vote(true, {from: accounts[4]});
+
+    // Increase block time by a day
+    await web3.evm.increaseTime(24 * 60 * 60);
+
+    const repoBalanceStart = await token.balanceOf(repo.address);
+
+    await repo.voteResult({from: accounts[4]});
+
+    const repoBalanceEnd = await token.balanceOf(repo.address);
+
+    assert.equal(repoBalanceStart.toNumber() - repoBalanceEnd.toNumber(), 1, 'repo balance should reflect destroyed tokens');
+
+    const isMaintainer = await repo.maintainers.call(accounts[0]);
+
+    assert.isNotOk(isMaintainer, 'account should lose maintainer status due to veto');
+  });
+
 });

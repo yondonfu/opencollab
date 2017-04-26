@@ -1,19 +1,3 @@
-/*
- * Mango Repository
- * Copyright (C) 2016 Alex Beregszaszi
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 3 of the License only.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
 pragma solidity ^0.4.6;
 
 import "./SafeMath.sol";
@@ -24,22 +8,35 @@ contract MangoRepo is SafeMath {
   bool public obsolete;
   uint maintainerPercentage = 50;
 
-  uint openPullRequestStake = 1;
-  uint mergePullRequestStake = 1;
-  uint challengeStake = 1;
+  uint contributorStake = 1;
+  uint maintainerStake = 1;
+  uint challengerStake = 1;
 
-  bool challenged;
+  enum Period { Challenge, Voting, Regular }
+  Period currentPeriod;
+
   uint256 challengePeriod = 1 days;
   uint256 challengePeriodEnd;
   uint256 votingPeriod = 1 days;
   uint256 votingPeriodEnd;
+
+  struct VotingRound {
+    uint256 startTime;
+    address maintainer;
+    address challenger;
+    uint256 uphold;
+    uint256 veto;
+    mapping (address => bool) voted;
+  }
+
+  VotingRound[] votingRounds;
 
   mapping (address => uint) rewards;
 
   OpenCollabToken public token;
 
   address[] maintainerAddresses;
-  mapping (address => bool) maintainers;
+  mapping (address => bool) public maintainers;
 
   string[] refKeys;
   mapping (string => string) refs;
@@ -83,6 +80,7 @@ contract MangoRepo is SafeMath {
     name = _name;
     maintainers[msg.sender] = true;
     maintainerAddresses.push(msg.sender);
+    currentPeriod = Period.Regular;
     obsolete = false;
     token = new OpenCollabToken(address(this));
   }
@@ -185,7 +183,7 @@ contract MangoRepo is SafeMath {
     delete issues[id];
   }
 
-  function voteIssue(uint id, uint stake) returns (bool success) {
+  function stakeIssue(uint id, uint stake) returns (bool success) {
     if (id >= issues.length || id < 0) throw;
     if (bytes(issues[id].hash).length == 0) throw;
 
@@ -215,7 +213,7 @@ contract MangoRepo is SafeMath {
     if (bytes(issues[issueId].hash).length == 0) throw;
 
     // Transfer stake to repo
-    token.stake(msg.sender, openPullRequestStake);
+    token.stake(msg.sender, contributorStake);
 
     pullRequests.push(PullRequest(pullRequests.length - 1, issues[issueId], msg.sender, fork));
   }
@@ -225,7 +223,7 @@ contract MangoRepo is SafeMath {
     if (pullRequests[id].fork == address(0)) throw;
 
     // Destroy stake
-    token.destroy(openPullRequestStake);
+    token.destroy(contributorStake);
 
     delete pullRequests[id];
   }
@@ -233,22 +231,31 @@ contract MangoRepo is SafeMath {
   function initMergePullRequest(uint id) maintainerOnly {
     if (id >= pullRequests.length || id < 0) throw;
     if (pullRequests[id].fork == address(0)) throw;
-    // Already in a challenge period
-    if (challenged) throw;
+    // Already in a challenge or voting period
+    if (currentPeriod == Period.Challenge || currentPeriod == Period.Voting) throw;
 
-    challenged = true;
+    // Transfer stake to repo
+    token.stake(msg.sender, maintainerStake);
+
+    currentPeriod = Period.Challenge;
     challengePeriodEnd = block.timestamp + challengePeriod;
   }
 
   function mergePullRequest(uint id) maintainerOnly {
     if (id >= pullRequests.length || id < 0) throw;
     if (pullRequests[id].fork == address(0)) throw;
-    // Not in a challenge period
-    if (!challenged) throw;
+    // Not in challenge or voting period
+    if (currentPeriod == Period.Regular) throw;
     // Challenge period not over yet
-    if (block.timestamp < challengePeriodEnd) throw;
-
-    challenged = false;
+    if (currentPeriod == Period.Challenge
+        && block.timestamp < challengePeriodEnd) {
+      throw;
+    }
+    // Voting period not over yet
+    if (currentPeriod == Period.Voting
+        && block.timestamp < votingPeriodEnd) {
+      throw;
+    }
 
     // Mint issue reward
     token.mint(pullRequests[id].issue.totalStake);
@@ -257,14 +264,68 @@ contract MangoRepo is SafeMath {
     uint256 maintainerReward = calcMaintainerReward(pullRequests[id].issue.totalStake);
     uint256 contributorReward = pullRequests[id].issue.totalStake - maintainerReward;
 
-    rewards[msg.sender] = safeAdd(rewards[msg.sender], maintainerReward);
-    rewards[pullRequests[id].creator] = safeAdd(rewards[pullRequests[id].creator], contributorReward);
+    // Include stakes
+    rewards[msg.sender] = safeAdd(rewards[msg.sender], maintainerReward + maintainerStake);
+    rewards[pullRequests[id].creator] = safeAdd(rewards[pullRequests[id].creator], contributorReward + contributorStake);
 
     delete pullRequests[id];
+
+    currentPeriod = Period.Regular;
   }
 
   function calcMaintainerReward(uint256 amount) constant returns (uint256 reward) {
     return (amount * maintainerPercentage) / 100;
+  }
+
+  function challenge(address maintainer) {
+    // Not in challenge period
+    if (currentPeriod != Period.Challenge) throw;
+    // Check for insufficient balance
+    if (token.balanceOf(msg.sender) < challengerStake) throw;
+
+    // Transfer stake to repo
+    token.stake(msg.sender, challengerStake);
+
+    currentPeriod = Period.Voting;
+    votingPeriodEnd = block.timestamp + votingPeriod;
+    votingRounds.push(VotingRound(block.timestamp, maintainer, msg.sender, 0, 0));
+  }
+
+  function vote(bool uphold) {
+    // Not in voting period
+    if (currentPeriod != Period.Voting) throw;
+    // Check if sender is a token holder
+    if (token.balanceOf(msg.sender) == 0) throw;
+    // Already voted
+    if (votingRounds[votingRounds.length - 1].voted[msg.sender]) throw;
+
+    if (uphold) {
+      votingRounds[votingRounds.length - 1].uphold += 1;
+    } else {
+      votingRounds[votingRounds.length - 1].veto += 1;
+    }
+
+    votingRounds[votingRounds.length - 1].voted[msg.sender] = true;
+  }
+
+  function voteResult() {
+    // Not in voting period
+    if (currentPeriod != Period.Voting) throw;
+    // Voting period not over
+    if (block.timestamp < votingPeriodEnd) throw;
+
+    // TODO: what if there is a tie?
+    if (votingRounds[votingRounds.length - 1].uphold > votingRounds[votingRounds.length - 1].veto) {
+      // Decision upheld
+      // Destroy challenger staked tokens
+      token.destroy(challengerStake);
+    } else {
+      // Decision vetoed
+      // Destroy maintainer staked tokens
+      token.destroy(maintainerStake);
+      // Remove maintainer
+      removeMaintainer(votingRounds[votingRounds.length - 1].maintainer);
+    }
   }
 
   function reward() external {
@@ -308,7 +369,7 @@ contract MangoRepo is SafeMath {
     maintainerAddresses.push(addr);
   }
 
-  function removeMaintainer(address addr) maintainerOnly {
+  function removeMaintainer(address addr) internal {
     if (!maintainers[addr]) throw;
 
     maintainers[addr] = false;
