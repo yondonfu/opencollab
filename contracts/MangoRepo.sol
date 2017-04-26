@@ -31,7 +31,8 @@ contract MangoRepo is SafeMath {
 
   VotingRound[] votingRounds;
 
-  mapping (address => uint) rewards;
+  // Ledger for how much anyone can currently withdraw
+  mapping (address => uint) funds;
 
   OpenCollabToken public token;
 
@@ -48,6 +49,7 @@ contract MangoRepo is SafeMath {
     address creator;
     string hash;
     uint totalStake;
+    address[] stakers;
     mapping (address => uint) stakedTokens;
   }
 
@@ -167,7 +169,13 @@ contract MangoRepo is SafeMath {
   }
 
   function newIssue(string hash) {
-    issues.push(Issue(issues.length - 1, msg.sender, hash, 0));
+    Issue memory issue;
+    issue.id = issues.length - 1;
+    issue.creator = msg.sender;
+    issue.hash = hash;
+    issue.totalStake = 0;
+
+    issues.push(issue);
   }
 
   function setIssue(uint id, string hash) issuePermissions(id) {
@@ -180,6 +188,15 @@ contract MangoRepo is SafeMath {
     if (id >= issues.length || id < 0) throw;
     if (bytes(issues[id].hash).length == 0) throw;
 
+    // Release all stakes
+    for (uint i = 0; i < issues[id].stakers.length; i++) {
+      var staker = issues[id].stakers[i];
+
+      funds[staker] = safeAdd(funds[staker], issues[id].stakedTokens[staker]);
+    }
+
+    // TODO: what if there is a pull request referencing an issue and the issue is deleted?
+
     delete issues[id];
   }
 
@@ -189,6 +206,10 @@ contract MangoRepo is SafeMath {
 
     // Transfer stake to repo
     token.stake(msg.sender, stake);
+
+    if (issues[id].stakedTokens[msg.sender] == 0) {
+      issues[id].stakers.push(msg.sender);
+    }
 
     issues[id].stakedTokens[msg.sender] = safeAdd(issues[id].stakedTokens[msg.sender], stake);
     issues[id].totalStake = safeAdd(issues[id].totalStake, stake);
@@ -257,16 +278,18 @@ contract MangoRepo is SafeMath {
       throw;
     }
 
+    var totalStake = pullRequests[id].issue.totalStake;
+
     // Mint issue reward
-    token.mint(pullRequests[id].issue.totalStake);
+    token.mint(totalStake);
 
     // Calculate rewards
-    uint256 maintainerReward = calcMaintainerReward(pullRequests[id].issue.totalStake);
-    uint256 contributorReward = pullRequests[id].issue.totalStake - maintainerReward;
+    uint256 maintainerReward = calcMaintainerReward(totalStake);
+    uint256 contributorReward = totalStake - maintainerReward;
 
     // Include stakes
-    rewards[msg.sender] = safeAdd(rewards[msg.sender], maintainerReward + maintainerStake);
-    rewards[pullRequests[id].creator] = safeAdd(rewards[pullRequests[id].creator], contributorReward + contributorStake);
+    funds[msg.sender] = safeAdd(funds[msg.sender], maintainerReward + maintainerStake);
+    funds[pullRequests[id].creator] = safeAdd(funds[pullRequests[id].creator], contributorReward + contributorStake);
 
     delete pullRequests[id];
 
@@ -314,8 +337,8 @@ contract MangoRepo is SafeMath {
     // Voting period not over
     if (block.timestamp < votingPeriodEnd) throw;
 
-    // TODO: what if there is a tie?
-    if (votingRounds[votingRounds.length - 1].uphold > votingRounds[votingRounds.length - 1].veto) {
+    // TODO: should a tie default to uphold?
+    if (votingRounds[votingRounds.length - 1].uphold >= votingRounds[votingRounds.length - 1].veto) {
       // Decision upheld
       // Destroy challenger staked tokens
       token.destroy(challengerStake);
@@ -329,12 +352,12 @@ contract MangoRepo is SafeMath {
   }
 
   function reward() external {
-    uint256 reward = rewards[msg.sender];
+    uint256 reward = funds[msg.sender];
 
     if (reward == 0) throw;
     if (token.balanceOf(address(this)) < reward) throw;
 
-    rewards[msg.sender] = 0;
+    funds[msg.sender] = 0;
 
     token.transfer(msg.sender, reward);
   }

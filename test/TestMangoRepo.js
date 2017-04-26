@@ -36,7 +36,7 @@ contract('MangoRepo', function(accounts) {
   let token;
 
   before(async function() {
-    repo = await MangoRepo.new('foo', {from: accounts[0]});
+    repo = await MangoRepo.new('foo', {from: accounts[0], gas: 8000000});
 
     const tokenAddr = await repo.tokenAddr();
     token = OpenCollabToken.at(tokenAddr);
@@ -152,6 +152,8 @@ contract('MangoRepo', function(accounts) {
   it('should distribute rewards for an unchallenged merged pull request', async function() {
     const maintainerBalanceStart = await token.balanceOf(accounts[0]);
     const contributorBalanceStart = await token.balanceOf(accounts[3]);
+    const voter1BalanceStart = await token.balanceOf(accounts[1]);
+    const voter2BalanceStart = await token.balanceOf(accounts[2]);
 
     // Increase block time by a day
     await web3.evm.increaseTime(24 * 60 * 60);
@@ -169,6 +171,21 @@ contract('MangoRepo', function(accounts) {
 
     assert.equal(maintainerBalanceEnd.toNumber() - maintainerBalanceStart.toNumber(), 4, 'maintainer should update token balance with reward');
     assert.equal(contributorBalanceEnd.toNumber() - contributorBalanceStart.toNumber(), 4, 'contributor should update token balance with reward');
+
+    // Delete issue
+    await repo.deleteIssue(0);
+
+    // Voter 1 claims stake
+    await repo.reward({from: accounts[1]});
+
+    // Voter 2 claims stake
+    await repo.reward({from: accounts[2]});
+
+    const voter1BalanceEnd = await token.balanceOf(accounts[1]);
+    const voter2BalanceEnd = await token.balanceOf(accounts[2]);
+
+    assert.equal(voter1BalanceEnd.toNumber() - voter1BalanceStart.toNumber(), 4, 'voter 1 should update token balance with released stake');
+    assert.equal(voter2BalanceEnd.toNumber() - voter2BalanceStart.toNumber(), 2, 'voter 2 should update token balance with released stake');
   });
 
   it('should run a voting round and uphold a challenged pull request', async function() {
