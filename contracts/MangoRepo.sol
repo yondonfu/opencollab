@@ -6,11 +6,13 @@ import "./OpenCollabToken.sol";
 contract MangoRepo is SafeMath {
   string public name;
   bool public obsolete;
-  uint maintainerPercentage = 50;
 
-  uint contributorStake = 1;
-  uint maintainerStake = 1;
-  uint challengerStake = 1;
+  // Repo params
+
+  uint maintainerPercentage;
+  uint contributorStake;
+  uint maintainerStake;
+  uint challengerStake;
 
   enum Period { Challenge, Voting, Regular }
   Period currentPeriod;
@@ -85,6 +87,12 @@ contract MangoRepo is SafeMath {
     currentPeriod = Period.Regular;
     obsolete = false;
     token = new OpenCollabToken(address(this));
+
+    // Default repo params
+    maintainerPercentage = 50;
+    maintainerStake = 1000000000000000000;
+    contributorStake = 1000000000000000000;
+    challengerStake = 1000000000000000000;
   }
 
   function tokenAddr() constant returns (address addr) {
