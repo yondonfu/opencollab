@@ -3,24 +3,30 @@ pragma solidity ^0.4.6;
 import "./SafeMath.sol";
 import "./OpenCollabToken.sol";
 
-contract MangoRepo is SafeMath {
+contract OpenCollabRepo is SafeMath {
   string public name;
   bool public obsolete;
 
   // Repo params
 
-  uint maintainerPercentage;
-  uint contributorStake;
-  uint maintainerStake;
-  uint challengerStake;
+  uint256 maintainerPercentage;
+  uint256 voterRewardPercentage;
+  uint256 voterPenaltyPercentage;
+
+  uint256 voterDeposit;
+  uint256 contributorStake;
+  uint256 maintainerStake;
+  uint256 challengerStake;
 
   enum Period { Challenge, Voting, Regular }
   Period currentPeriod;
 
   uint256 challengePeriod = 1 days;
   uint256 challengePeriodEnd;
-  uint256 votingPeriod = 1 days;
-  uint256 votingPeriodEnd;
+  uint256 votingCommitPeriod = 1 days;
+  uint256 votingCommitPeriodEnd;
+  uint256 votingRevealPeriod = 1 days;
+  uint256 votingRevealPeriodEnd;
 
   struct VotingRound {
     uint256 startTime;
@@ -28,15 +34,26 @@ contract MangoRepo is SafeMath {
     address challenger;
     uint256 uphold;
     uint256 veto;
-    mapping (address => bool) voted;
+    mapping (address => Vote) votes;
+  }
+
+  struct Vote {
+    bytes32 commit;
+    uint256 vote;
+    bool commited;
+    bool revealed;
   }
 
   VotingRound[] votingRounds;
 
   // Ledger for how much anyone can currently withdraw
-  mapping (address => uint) funds;
+  mapping (address => uint256) funds;
 
-  OpenCollabToken public token;
+  // Ledger for token holders with deposits for governance voting
+  address[] voters;
+  mapping (address => uint256) voterDeposits;
+
+  OpenCollabToken token;
 
   address[] maintainerAddresses;
   mapping (address => bool) public maintainers;
@@ -80,7 +97,7 @@ contract MangoRepo is SafeMath {
     _;
   }
 
-  function MangoRepo(string _name) {
+  function OpenCollabRepo(string _name) {
     name = _name;
     maintainers[msg.sender] = true;
     maintainerAddresses.push(msg.sender);
@@ -90,10 +107,16 @@ contract MangoRepo is SafeMath {
 
     // Default repo params
     maintainerPercentage = 50;
+    voterRewardPercentage = 5;
+    voterPenaltyPercentage = 20;
+
+    voterDeposit = 2000000000000000000;
     maintainerStake = 1000000000000000000;
     contributorStake = 1000000000000000000;
     challengerStake = 1000000000000000000;
   }
+
+  // Token functions
 
   function tokenAddr() constant returns (address addr) {
     return address(token);
@@ -106,6 +129,8 @@ contract MangoRepo is SafeMath {
   function transferOCT(address to, uint256 value) maintainerOnly {
     token.transfer(to, value);
   }
+
+  // Ref functions
 
   function refCount() constant returns (uint) {
     return refKeys.length;
@@ -147,9 +172,7 @@ contract MangoRepo is SafeMath {
     refs[ref] = "";
   }
 
-  function strEqual(string a, string b) private returns (bool) {
-    return sha3(a) == sha3(b);
-  }
+  // Snapshot functions
 
   function snapshotCount() constant returns (uint) {
     return snapshots.length;
@@ -163,7 +186,7 @@ contract MangoRepo is SafeMath {
     snapshots.push(hash);
   }
 
-  // Issue operations
+  // Issue functions
 
   function issueCount() constant returns (uint count) {
     return issues.length;
@@ -203,8 +226,6 @@ contract MangoRepo is SafeMath {
       funds[staker] = safeAdd(funds[staker], issues[id].stakedTokens[staker]);
     }
 
-    // TODO: what if there is a pull request referencing an issue and the issue is deleted?
-
     delete issues[id];
   }
 
@@ -225,7 +246,7 @@ contract MangoRepo is SafeMath {
     return true;
   }
 
-  // Pull request operations
+  // Pull request functions
 
   function pullRequestCount() constant returns (uint count) {
     return pullRequests.length;
@@ -282,7 +303,7 @@ contract MangoRepo is SafeMath {
     }
     // Voting period not over yet
     if (currentPeriod == Period.Voting
-        && block.timestamp < votingPeriodEnd) {
+        && block.timestamp < votingRevealPeriodEnd) {
       throw;
     }
 
@@ -308,6 +329,21 @@ contract MangoRepo is SafeMath {
     return (amount * maintainerPercentage) / 100;
   }
 
+  // Governance voting functions
+
+  function deposit() {
+    // Check if already deposited
+    if (voterDeposits[msg.sender] > 0) throw;
+    // Check for insufficient balance
+    if (token.balanceOf(msg.sender) < voterDeposit) throw;
+
+    // Transfer stake to repo
+    token.stake(msg.sender, voterDeposit);
+
+    voters.push(msg.sender);
+    voterDeposits[msg.sender] = safeAdd(voterDeposits[msg.sender], voterDeposit);
+  }
+
   function challenge(address maintainer) {
     // Not in challenge period
     if (currentPeriod != Period.Challenge) throw;
@@ -318,45 +354,99 @@ contract MangoRepo is SafeMath {
     token.stake(msg.sender, challengerStake);
 
     currentPeriod = Period.Voting;
-    votingPeriodEnd = block.timestamp + votingPeriod;
+    votingCommitPeriodEnd = block.timestamp + votingCommitPeriod;
+    votingRevealPeriodEnd = block.timestamp + votingCommitPeriod + votingRevealPeriod;
     votingRounds.push(VotingRound(block.timestamp, maintainer, msg.sender, 0, 0));
   }
 
-  function vote(bool uphold) {
+  function commitVote(bytes32 commit) {
     // Not in voting period
     if (currentPeriod != Period.Voting) throw;
-    // Check if sender is a token holder
-    if (token.balanceOf(msg.sender) == 0) throw;
+    // Not in voting commit period
+    if (block.timestamp >= votingCommitPeriodEnd) throw;
+    // Check if sender has a voter deposit
+    if (voterDeposits[msg.sender] == 0) throw;
     // Already voted
-    if (votingRounds[votingRounds.length - 1].voted[msg.sender]) throw;
+    if (votingRounds[votingRounds.length - 1].votes[msg.sender].commited) throw;
 
-    if (uphold) {
+    votingRounds[votingRounds.length - 1].votes[msg.sender] = Vote(commit, 0, true, false);
+  }
+
+  function revealVote(string vote) {
+    // Not in voting period
+    if (currentPeriod != Period.Voting) throw;
+    // Not in voting reveal period
+    if (block.timestamp >= votingRevealPeriodEnd) throw;
+    // Check if sender has a voter deposit
+    if (voterDeposits[msg.sender] == 0) throw;
+    // Vote already revealed
+    if (votingRounds[votingRounds.length - 1].votes[msg.sender].revealed) throw;
+    // Revealed vote does not match commit
+    if (keccak256(vote) != votingRounds[votingRounds.length - 1].votes[msg.sender].commit) throw;
+
+    // Count vote
+    bytes memory bytesVote = bytes(vote);
+
+    if (bytesVote[0] == '1') {
       votingRounds[votingRounds.length - 1].uphold += 1;
+      votingRounds[votingRounds.length - 1].votes[msg.sender].vote = 1;
     } else {
       votingRounds[votingRounds.length - 1].veto += 1;
+      votingRounds[votingRounds.length - 1].votes[msg.sender].vote = 2;
     }
 
-    votingRounds[votingRounds.length - 1].voted[msg.sender] = true;
+    votingRounds[votingRounds.length - 1].votes[msg.sender].revealed = true;
   }
 
   function voteResult() {
     // Not in voting period
     if (currentPeriod != Period.Voting) throw;
-    // Voting period not over
-    if (block.timestamp < votingPeriodEnd) throw;
+    // Voting reveal period not over
+    if (block.timestamp < votingRevealPeriodEnd) throw;
 
-    // TODO: should a tie default to uphold?
+    bool upheld = false;
+
     if (votingRounds[votingRounds.length - 1].uphold >= votingRounds[votingRounds.length - 1].veto) {
       // Decision upheld
       // Destroy challenger staked tokens
       token.destroy(challengerStake);
+      upheld = true;
     } else {
       // Decision vetoed
       // Destroy maintainer staked tokens
       token.destroy(maintainerStake);
       // Remove maintainer
       removeMaintainer(votingRounds[votingRounds.length - 1].maintainer);
+      upheld = false;
     }
+
+    VotingRound vr = votingRounds[votingRounds.length - 1];
+
+    for (uint256 i = 0; i < voters.length; i++) {
+      if (upheld) {
+        if (vr.votes[voters[i]].revealed && vr.votes[voters[i]].vote == 1) {
+          rewardVoter(voters[i]);
+        } else {
+          penalizeVoter(voters[i]);
+        }
+      } else {
+        if (vr.votes[voters[i]].revealed && vr.votes[voters[i]].vote == 2) {
+          rewardVoter(voters[i]);
+        } else {
+          penalizeVoter(voters[i]);
+        }
+      }
+    }
+  }
+
+  function rewardVoter(address addr) internal {
+    uint256 reward = (voterDeposits[addr] * voterRewardPercentage) / 100;
+    voterDeposits[addr] = safeAdd(voterDeposits[addr], reward);
+  }
+
+  function penalizeVoter(address addr) internal {
+    uint256 penalty = (voterDeposits[addr] * voterPenaltyPercentage) / 100;
+    voterDeposits[addr] = safeSub(voterDeposits[addr], penalty);
   }
 
   function reward() external {
@@ -370,11 +460,7 @@ contract MangoRepo is SafeMath {
     token.transfer(msg.sender, reward);
   }
 
-  function setObsolete() maintainerOnly {
-    obsolete = true;
-  }
-
-  // Maintainer operations
+  // Maintainer functions
 
   function maintainerCount() constant returns (uint) {
     return maintainerAddresses.length;
@@ -410,5 +496,15 @@ contract MangoRepo is SafeMath {
     if (pos != -1) {
       maintainerAddresses[uint(pos)] = address(0);
     }
+  }
+
+  // Utility functions
+
+  function setObsolete() maintainerOnly {
+    obsolete = true;
+  }
+
+  function strEqual(string a, string b) private returns (bool) {
+    return sha3(a) == sha3(b);
   }
 }

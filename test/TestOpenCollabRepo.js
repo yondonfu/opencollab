@@ -1,4 +1,4 @@
-const MangoRepo = artifacts.require('MangoRepo.sol');
+const OpenCollabRepo = artifacts.require('OpenCollabRepo.sol');
 const OpenCollabToken = artifacts.require('OpenCollabToken.sol');
 
 const BigNumber = require('bignumber.js');
@@ -40,12 +40,12 @@ web3.evm.increaseTime = function(time) {
   return rpc('evm_increaseTime', [time]);
 };
 
-contract('MangoRepo', function(accounts) {
+contract('OpenCollabRepo', function(accounts) {
   let repo;
   let token;
 
   before(async function() {
-    repo = await MangoRepo.new('foo', {from: accounts[0], gas: 8000000});
+    repo = await OpenCollabRepo.new('foo', {from: accounts[0], gas: 8000000});
 
     const tokenAddr = await repo.tokenAddr();
     token = OpenCollabToken.at(tokenAddr);
@@ -57,6 +57,13 @@ contract('MangoRepo', function(accounts) {
     await repo.transferOCT(accounts[2], tokenDecimal(20), {from: accounts[0]});
     await repo.transferOCT(accounts[3], tokenDecimal(20), {from: accounts[0]});
     await repo.transferOCT(accounts[4], tokenDecimal(20), {from: accounts[0]});
+
+    // Voter deposits
+    await repo.deposit({from: accounts[0]});
+    await repo.deposit({from: accounts[1]});
+    await repo.deposit({from: accounts[2]});
+    await repo.deposit({from: accounts[3]});
+    await repo.deposit({from: accounts[4]});
   });
 
   it('should properly allocate tokens to different accounts', async function() {
@@ -66,11 +73,11 @@ contract('MangoRepo', function(accounts) {
     const balance3 = await token.balanceOf(accounts[3]);
     const balance4 = await token.balanceOf(accounts[4]);
 
-    assert.equal(balance0.toNumber(), tokenDecimal(20), 'should have the correct balance for account 0');
-    assert.equal(balance1.toNumber(), tokenDecimal(20), 'should have the correct balance for account 1');
-    assert.equal(balance2.toNumber(), tokenDecimal(20), 'should have the correct balance for account 2');
-    assert.equal(balance3.toNumber(), tokenDecimal(20), 'should have the correct balance for account 3');
-    assert.equal(balance4.toNumber(), tokenDecimal(20), 'should have the correct balance for account 4');
+    assert.equal(balance0.toNumber(), tokenDecimal(18), 'should have the correct balance for account 0');
+    assert.equal(balance1.toNumber(), tokenDecimal(18), 'should have the correct balance for account 1');
+    assert.equal(balance2.toNumber(), tokenDecimal(18), 'should have the correct balance for account 2');
+    assert.equal(balance3.toNumber(), tokenDecimal(18), 'should have the correct balance for account 3');
+    assert.equal(balance4.toNumber(), tokenDecimal(18), 'should have the correct balance for account 4');
   });
 
   it('should create a new issue', async function() {
@@ -227,11 +234,29 @@ contract('MangoRepo', function(accounts) {
 
     await repo.challenge(accounts[0], {from: accounts[4]});
 
-    await repo.vote(true, {from: accounts[0]});
-    await repo.vote(true, {from: accounts[1]});
-    await repo.vote(true, {from: accounts[2]});
-    await repo.vote(false, {from: accounts[3]});
-    await repo.vote(false, {from: accounts[4]});
+    // Generate keccak256 hash. Note using same secret phrase for ease of testing, but in practice secret phrase would be
+    // different for every voter
+
+    const secret = 'secret';
+    const upholdVote = '1' + secret;
+    const vetoVote = '2' + secret;
+    const upholdCommit = web3.sha3(upholdVote);
+    const vetoCommit = web3.sha3(vetoVote);
+
+    await repo.commitVote(upholdCommit, {from: accounts[0]});
+    await repo.commitVote(upholdCommit, {from: accounts[1]});
+    await repo.commitVote(upholdCommit, {from: accounts[2]});
+    await repo.commitVote(vetoCommit, {from: accounts[3]});
+    await repo.commitVote(vetoCommit, {from: accounts[4]});
+
+    // Increase block time by a day
+    await web3.evm.increaseTime(24 * 60 * 60);
+
+    await repo.revealVote(upholdVote, {from: accounts[0]});
+    await repo.revealVote(upholdVote, {from: accounts[1]});
+    await repo.revealVote(upholdVote, {from: accounts[2]});
+    await repo.revealVote(vetoVote, {from: accounts[3]});
+    await repo.revealVote(vetoVote, {from: accounts[4]});
 
     // Increase block time by a day
     await web3.evm.increaseTime(24 * 60 * 60);
@@ -265,11 +290,29 @@ contract('MangoRepo', function(accounts) {
 
     await repo.challenge(accounts[0], {from: accounts[4]});
 
-    await repo.vote(false, {from: accounts[0]});
-    await repo.vote(false, {from: accounts[1]});
-    await repo.vote(false, {from: accounts[2]});
-    await repo.vote(true, {from: accounts[3]});
-    await repo.vote(true, {from: accounts[4]});
+    // Generate keccak256 hash. Note using same secret phrase for ease of testing, but in practice secret phrase would be
+    // different for every voter
+
+    const secret = 'secret';
+    const upholdVote = '1' + secret;
+    const vetoVote = '2' + secret;
+    const upholdCommit = web3.sha3(upholdVote);
+    const vetoCommit = web3.sha3(vetoVote);
+
+    await repo.commitVote(vetoCommit, {from: accounts[0]});
+    await repo.commitVote(vetoCommit, {from: accounts[1]});
+    await repo.commitVote(vetoCommit, {from: accounts[2]});
+    await repo.commitVote(upholdCommit, {from: accounts[3]});
+    await repo.commitVote(upholdCommit, {from: accounts[4]});
+
+    // Increase block time by a day
+    await web3.evm.increaseTime(24 * 60 * 60);
+
+    await repo.revealVote(vetoVote, {from: accounts[0]});
+    await repo.revealVote(vetoVote, {from: accounts[1]});
+    await repo.revealVote(vetoVote, {from: accounts[2]});
+    await repo.revealVote(upholdVote, {from: accounts[3]});
+    await repo.revealVote(upholdVote, {from: accounts[4]});
 
     // Increase block time by a day
     await web3.evm.increaseTime(24 * 60 * 60);
