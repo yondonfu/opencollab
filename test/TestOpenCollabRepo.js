@@ -262,14 +262,22 @@ contract('OpenCollabRepo', function(accounts) {
     await web3.evm.increaseTime(24 * 60 * 60);
 
     const repoBalanceStart = await token.balanceOf(repo.address);
+    const rewardedVoterDepositStart = await repo.voterDeposits.call(accounts[1]);
+    const penalizedVoterDepositStart = await repo.voterDeposits.call(accounts[3]);
 
     await repo.voteResult({from: accounts[4]});
 
     const repoBalanceEnd = await token.balanceOf(repo.address);
+    const rewardedVoterDepositEnd = await repo.voterDeposits.call(accounts[1]);
+    const penalizedVoterDepositEnd = await repo.voterDeposits.call(accounts[3]);
 
     const challengerStake = tokenDecimal(1);
+    const voterReward = (tokenDecimal(2) * 5) / 100;
+    const voterPenalty = (tokenDecimal(2) * 20) / 100;
 
     assert.equal(repoBalanceStart.minus(repoBalanceEnd).toNumber(), challengerStake, 'repo balance should reflect destroyed tokens');
+    assert.equal(rewardedVoterDepositEnd.minus(rewardedVoterDepositStart), voterReward, 'winning voter balance should reflect reward');
+    assert.equal(penalizedVoterDepositStart.minus(penalizedVoterDepositEnd), voterPenalty, 'losing voter balance should reflect reward');
 
     await repo.mergePullRequest(2, {from: accounts[0]});
   });

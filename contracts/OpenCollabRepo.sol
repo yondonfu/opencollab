@@ -51,7 +51,7 @@ contract OpenCollabRepo is SafeMath {
 
   // Ledger for token holders with deposits for governance voting
   address[] voters;
-  mapping (address => uint256) voterDeposits;
+  mapping (address => uint256) public voterDeposits;
 
   OpenCollabToken token;
 
