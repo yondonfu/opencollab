@@ -25,23 +25,12 @@ contract OpenCollabToken is ERC20, SafeMath {
     repoAddress = _repoAddress;
   }
 
-  // Minted OCT initially sent to the associated MangoRepo contract
-  function mint(uint256 value) onlyRepo returns (bool success) {
+  function mint(address to, uint256 value) onlyRepo returns (bool success) {
     // Cannot mint more than cap
     if ((totalSupply + value) > supplyCap) throw;
 
-    balances[repoAddress] = safeAdd(balances[repoAddress], value);
+    balances[to] = safeAdd(balances[to], value);
     totalSupply = safeAdd(totalSupply, value);
-
-    return true;
-  }
-
-  function stake(address staker, uint256 value) onlyRepo returns (bool success) {
-    // Check for insufficient tokens
-    if (balances[staker] < value) throw;
-
-    balances[repoAddress] = safeAdd(balances[repoAddress], value);
-    balances[staker] = safeSub(balances[staker], value);
 
     return true;
   }
